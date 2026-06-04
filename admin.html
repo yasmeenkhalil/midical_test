@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>لوحة التفعيل اليدوي — OMSPrep+Atlas</title>
+<style>
+  :root{ --bg:#0a0f1e; --card:#141d35; --line:#22304f; --tx:#e2e8f0; --mut:#94a3b8; --teal:#2dd4bf; --green:#22c55e; --red:#ef4444; }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--tx);font-family:"Cairo",system-ui,Arial,sans-serif;min-height:100vh;display:flex;align-items:flex-start;justify-content:center;padding:24px}
+  .wrap{width:100%;max-width:520px}
+  h1{font-size:20px;margin:0 0 4px}
+  .sub{color:var(--mut);font-size:13px;margin-bottom:20px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:20px;margin-bottom:16px}
+  label{display:block;font-size:13px;color:var(--mut);margin:12px 0 6px}
+  input,select{width:100%;padding:11px 12px;border-radius:9px;border:1px solid var(--line);background:#0d1426;color:var(--tx);font-size:15px;font-family:inherit}
+  button{width:100%;margin-top:18px;padding:12px;border:0;border-radius:9px;background:var(--teal);color:#06241f;font-weight:800;font-size:15px;cursor:pointer}
+  button:disabled{opacity:.5;cursor:default}
+  .msg{margin-top:14px;padding:11px 12px;border-radius:9px;font-size:14px;display:none}
+  .msg.ok{display:block;background:rgba(34,197,94,.12);border:1px solid var(--green);color:#86efac}
+  .msg.err{display:block;background:rgba(239,68,68,.12);border:1px solid var(--red);color:#fca5a5}
+  .hint{font-size:12px;color:var(--mut);margin-top:6px;line-height:1.7}
+  code{background:#0d1426;padding:1px 6px;border-radius:5px;color:var(--teal)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>لوحة التفعيل اليدوي</h1>
+  <div class="sub">لتفعيل اشتراك دفعه الطالب عبر <b>ZainCash</b> (تحويل يدوي). هذه الصفحة لك وحدك — لا توزّعها.</div>
+
+  <div class="card">
+    <label>عنوان الـ API (رابط الـ Worker)</label>
+    <input id="api" placeholder="https://omsprep-api.YOUR-SUBDOMAIN.workers.dev">
+    <div class="hint">ضع نفس الرابط الذي وضعته في <code>index.html</code> داخل <code>window.OMS_API_BASE</code>.</div>
+
+    <label>الرمز السرّي للمشرف (ADMIN_TOKEN)</label>
+    <input id="token" type="password" placeholder="••••••••••••••••">
+    <div class="hint">نفس القيمة التي ضبطتها بأمر <code>wrangler secret put ADMIN_TOKEN</code>.</div>
+  </div>
+
+  <div class="card">
+    <label>بريد الطالب (نفس البريد الذي سجّل به)</label>
+    <input id="email" type="email" placeholder="student@example.com">
+
+    <label>الخطة</label>
+    <select id="plan">
+      <option value="2m">شهرين — 5000 دينار</option>
+      <option value="3m">ثلاثة أشهر — 10000 دينار</option>
+      <option value="12m">سنة كاملة — 25000 دينار</option>
+    </select>
+
+    <label>ملاحظة / رقم عملية ZainCash (اختياري)</label>
+    <input id="note" placeholder="مثال: ZainCash TX 12345 بتاريخ ...">
+
+    <button id="go">تفعيل الاشتراك</button>
+    <div id="msg" class="msg"></div>
+  </div>
+</div>
+
+<script>
+  // remember the API + token locally for convenience (this page is private to the admin)
+  for (const k of ["api","token"]) {
+    const v = localStorage.getItem("oms_admin_"+k); if (v) document.getElementById(k).value = v;
+    document.getElementById(k).addEventListener("input", e=>localStorage.setItem("oms_admin_"+k, e.target.value));
+  }
+  const $ = id => document.getElementById(id);
+  $("go").addEventListener("click", async () => {
+    const api = $("api").value.trim().replace(/\/+$/,"");
+    const token = $("token").value.trim();
+    const email = $("email").value.trim();
+    const plan = $("plan").value;
+    const note = $("note").value.trim();
+    const msg = $("msg");
+    msg.className = "msg"; msg.textContent = "";
+    if (!api || !token || !email) { msg.className="msg err"; msg.textContent="املأ الرابط والرمز والبريد."; return; }
+    $("go").disabled = true; $("go").textContent = "جارٍ التفعيل…";
+    try {
+      const r = await fetch(api + "/api/admin/activate", {
+        method:"POST",
+        headers:{ "Content-Type":"application/json", "Authorization":"Bearer "+token },
+        body: JSON.stringify({ email, plan, note })
+      });
+      const d = await r.json();
+      if (r.ok && d.ok) {
+        const end = new Date(d.end_at).toLocaleDateString("ar");
+        msg.className="msg ok";
+        msg.textContent = "تم التفعيل ✓  البريد: "+d.email+"  — الخطة: "+plan+"  — ينتهي في: "+end;
+      } else {
+        msg.className="msg err";
+        msg.textContent = "فشل: " + (d.error || ("رمز الحالة "+r.status));
+      }
+    } catch(e) {
+      msg.className="msg err"; msg.textContent = "تعذّر الاتصال بالخادم: " + e.message;
+    } finally {
+      $("go").disabled = false; $("go").textContent = "تفعيل الاشتراك";
+    }
+  });
+</script>
+</body>
+</html>

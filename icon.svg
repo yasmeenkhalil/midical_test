@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <rect width="512" height="512" rx="96" fill="#0a0f1e"/>
+  <path d="M256 96c-58 0-116 50-116 116 0 42 17 75 33 108s25 50 25 80a17 17 0 0 0 34 0c0-30 9-47 25-80s33-66 33-108c0-66-58-116-116-116z" fill="none" stroke="#2dd4bf" stroke-width="22" stroke-linejoin="round"/>
+  <text x="256" y="448" font-family="Arial, sans-serif" font-size="92" font-weight="900" fill="#2dd4bf" text-anchor="middle">OMS</text>
+</svg>

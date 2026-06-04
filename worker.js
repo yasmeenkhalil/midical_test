@@ -1,0 +1,286 @@
+/**
+ * OMSPrep + Atlas — Cloudflare Worker (backend)
+ * Handles: signup/login (sessions), 2-hour free preview, plans,
+ *          PayTabs hosted payment + webhook, manual ZainCash activation (admin),
+ *          and serving the PROTECTED (paid) content only to entitled users.
+ *
+ * Bindings (set in wrangler.toml / dashboard):
+ *   DB        -> D1 database (schema.sql)
+ *   SESSIONS  -> KV namespace (login sessions)
+ *   PAID      -> static paid-content.json bundled as a module asset OR stored in KV "PAID_CONTENT"
+ * Secrets (wrangler secret put ...):
+ *   PAYTABS_PROFILE_ID, PAYTABS_SERVER_KEY, PAYTABS_REGION (e.g. "ARE" or "global"),
+ *   ADMIN_TOKEN  (a long random string you keep private for manual ZainCash activation)
+ *   SITE_URL     (e.g. https://omsprep.pages.dev) for return/callback URLs
+ *
+ * Plans (prices in IQD; PayTabs charges in its account currency — see notes in deploy guide):
+ *   2m  = 5000  (2 months)
+ *   3m  = 10000 (3 months)
+ *   12m = 25000 (12 months)
+ */
+
+const PLANS = {
+  "2m":  { months: 2,  price: 5000,  label: "شهرين"     },
+  "3m":  { months: 3,  price: 10000, label: "ثلاثة أشهر" },
+  "12m": { months: 12, price: 25000, label: "سنة كاملة"  },
+};
+const PREVIEW_MS = 2 * 60 * 60 * 1000; // 2-hour free full preview
+const SESSION_TTL = 60 * 60 * 24 * 30; // 30 days (seconds, for KV)
+
+const CORS = (origin) => ({
+  "Access-Control-Allow-Origin": origin || "*",
+  "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
+  "Access-Control-Allow-Headers": "Content-Type,Authorization",
+  "Access-Control-Allow-Credentials": "true",
+});
+
+function json(data, status = 200, origin) {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: { "Content-Type": "application/json; charset=utf-8", ...CORS(origin) },
+  });
+}
+
+// ---------- crypto helpers (PBKDF2 password hashing) ----------
+async function hashPassword(password, saltHex) {
+  const enc = new TextEncoder();
+  const salt = saltHex ? hexToBytes(saltHex) : crypto.getRandomValues(new Uint8Array(16));
+  const key = await crypto.subtle.importKey("raw", enc.encode(password), "PBKDF2", false, ["deriveBits"]);
+  const bits = await crypto.subtle.deriveBits(
+    { name: "PBKDF2", salt, iterations: 100000, hash: "SHA-256" }, key, 256);
+  return bytesToHex(salt) + ":" + bytesToHex(new Uint8Array(bits));
+}
+async function verifyPassword(password, stored) {
+  const [saltHex, hashHex] = stored.split(":");
+  const recomputed = await hashPassword(password, saltHex);
+  return timingSafeEq(recomputed.split(":")[1], hashHex);
+}
+function timingSafeEq(a, b) {
+  if (a.length !== b.length) return false;
+  let r = 0; for (let i = 0; i < a.length; i++) r |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return r === 0;
+}
+function bytesToHex(b){return [...b].map(x=>x.toString(16).padStart(2,"0")).join("");}
+function hexToBytes(h){const a=new Uint8Array(h.length/2);for(let i=0;i<a.length;i++)a[i]=parseInt(h.substr(i*2,2),16);return a;}
+function uuid(){return crypto.randomUUID();}
+
+// ---------- session helpers ----------
+async function createSession(env, userId){
+  const sid = uuid();
+  await env.SESSIONS.put("s:"+sid, userId, { expirationTtl: SESSION_TTL });
+  return sid;
+}
+async function getUserIdFromReq(env, req){
+  const auth = req.headers.get("Authorization") || "";
+  const m = auth.match(/^Bearer\s+(.+)$/i);
+  if(!m) return null;
+  return await env.SESSIONS.get("s:"+m[1]);
+}
+
+// ---------- entitlement ----------
+async function getEntitlement(env, userId){
+  // returns {access:'full'|'preview'|'none', until:epochMs|null, plan|null}
+  const now = Date.now();
+  const sub = await env.DB.prepare(
+    "SELECT * FROM subscriptions WHERE user_id=?1 AND status='active' AND end_at>?2 ORDER BY end_at DESC LIMIT 1"
+  ).bind(userId, now).first();
+  if (sub) return { access: "full", until: sub.end_at, plan: sub.plan };
+
+  // preview: 2 hours from first start
+  const user = await env.DB.prepare("SELECT preview_used_at FROM users WHERE id=?1").bind(userId).first();
+  if (user && user.preview_used_at) {
+    const until = user.preview_used_at + PREVIEW_MS;
+    if (now < until) return { access: "preview", until, plan: null };
+  }
+  return { access: "none", until: null, plan: null };
+}
+
+// ---------- PayTabs ----------
+function paytabsBase(region){
+  // region-specific endpoints; default to global secure endpoint
+  const map = {
+    ARE: "https://secure.paytabs.com",
+    SAU: "https://secure.paytabs.sa",
+    EGY: "https://secure-egypt.paytabs.com",
+    JOR: "https://secure-jordan.paytabs.com",
+    OMN: "https://secure-oman.paytabs.com",
+    KWT: "https://secure-kuwait.paytabs.com",
+    GLOBAL: "https://secure-global.paytabs.com",
+  };
+  return map[region] || map.GLOBAL;
+}
+
+async function paytabsCreatePage(env, { cartId, amount, currency, plan, user, siteUrl }){
+  const base = paytabsBase(env.PAYTABS_REGION);
+  const body = {
+    profile_id: Number(env.PAYTABS_PROFILE_ID),
+    tran_type: "sale",
+    tran_class: "ecom",
+    cart_id: cartId,
+    cart_currency: currency,
+    cart_amount: amount,
+    cart_description: "OMSPrep+Atlas subscription: " + plan,
+    paypage_lang: "ar",
+    customer_details: { name: user.name || "Student", email: user.email },
+    callback: siteUrl + "/api/pay/webhook",          // server-to-server (IPN)
+    return: siteUrl + "/?pay=done&cart=" + cartId,     // browser redirect after pay
+  };
+  const res = await fetch(base + "/payment/request", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "Authorization": env.PAYTABS_SERVER_KEY },
+    body: JSON.stringify(body),
+  });
+  return await res.json();
+}
+
+async function paytabsQuery(env, tranRef){
+  const base = paytabsBase(env.PAYTABS_REGION);
+  const res = await fetch(base + "/payment/query", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "Authorization": env.PAYTABS_SERVER_KEY },
+    body: JSON.stringify({ profile_id: Number(env.PAYTABS_PROFILE_ID), tran_ref: tranRef }),
+  });
+  return await res.json();
+}
+
+async function activateSubscription(env, { userId, plan, source, amount, currency, ref }){
+  const now = Date.now();
+  const months = PLANS[plan].months;
+  const end = now + months * 30 * 24 * 60 * 60 * 1000;
+  await env.DB.prepare(
+    "INSERT INTO subscriptions (id,user_id,plan,source,status,start_at,end_at,amount,currency,ref,created_at) VALUES (?1,?2,?3,?4,'active',?5,?6,?7,?8,?9,?5)"
+  ).bind(uuid(), userId, plan, source, now, end, amount||PLANS[plan].price, currency||"IQD", ref||"").run();
+  return end;
+}
+
+// ---------- main fetch ----------
+export default {
+  async fetch(req, env) {
+    const url = new URL(req.url);
+    const origin = req.headers.get("Origin") || env.SITE_URL || "*";
+    if (req.method === "OPTIONS") return new Response(null, { headers: CORS(origin) });
+
+    try {
+      // ---- SIGNUP ----
+      if (url.pathname === "/api/signup" && req.method === "POST") {
+        const { email, password, name } = await req.json();
+        if (!email || !password || password.length < 6) return json({ error: "بريد/كلمة مرور غير صالحة (٦ أحرف على الأقل)" }, 400, origin);
+        const exists = await env.DB.prepare("SELECT id FROM users WHERE email=?1").bind(email.toLowerCase()).first();
+        if (exists) return json({ error: "هذا البريد مسجَّل بالفعل" }, 409, origin);
+        const id = uuid();
+        const ph = await hashPassword(password);
+        await env.DB.prepare("INSERT INTO users (id,email,pass_hash,name,created_at) VALUES (?1,?2,?3,?4,?5)")
+          .bind(id, email.toLowerCase(), ph, name || "", Date.now()).run();
+        const sid = await createSession(env, id);
+        return json({ token: sid, email: email.toLowerCase(), name: name || "" }, 200, origin);
+      }
+
+      // ---- LOGIN ----
+      if (url.pathname === "/api/login" && req.method === "POST") {
+        const { email, password } = await req.json();
+        const u = await env.DB.prepare("SELECT * FROM users WHERE email=?1").bind((email||"").toLowerCase()).first();
+        if (!u || !(await verifyPassword(password, u.pass_hash))) return json({ error: "بيانات الدخول غير صحيحة" }, 401, origin);
+        const sid = await createSession(env, u.id);
+        return json({ token: sid, email: u.email, name: u.name }, 200, origin);
+      }
+
+      // ---- ME (status + entitlement) ----
+      if (url.pathname === "/api/me" && req.method === "GET") {
+        const userId = await getUserIdFromReq(env, req);
+        if (!userId) return json({ error: "unauthorized" }, 401, origin);
+        const u = await env.DB.prepare("SELECT email,name,preview_used_at FROM users WHERE id=?1").bind(userId).first();
+        const ent = await getEntitlement(env, userId);
+        return json({ email: u.email, name: u.name, entitlement: ent, previewUsed: !!u.preview_used_at }, 200, origin);
+      }
+
+      // ---- START 2-HOUR PREVIEW ----
+      if (url.pathname === "/api/preview/start" && req.method === "POST") {
+        const userId = await getUserIdFromReq(env, req);
+        if (!userId) return json({ error: "unauthorized" }, 401, origin);
+        const u = await env.DB.prepare("SELECT preview_used_at FROM users WHERE id=?1").bind(userId).first();
+        if (u.preview_used_at) {
+          const until = u.preview_used_at + PREVIEW_MS;
+          if (Date.now() < until) return json({ ok: true, until }, 200, origin);
+          return json({ error: "انتهت فترة المعاينة المجانية (ساعتان)" }, 403, origin);
+        }
+        const now = Date.now();
+        await env.DB.prepare("UPDATE users SET preview_used_at=?1 WHERE id=?2").bind(now, userId).run();
+        return json({ ok: true, until: now + PREVIEW_MS }, 200, origin);
+      }
+
+      // ---- PROTECTED CONTENT (the 60%) ----
+      if (url.pathname === "/api/content" && req.method === "GET") {
+        const userId = await getUserIdFromReq(env, req);
+        if (!userId) return json({ error: "unauthorized" }, 401, origin);
+        const ent = await getEntitlement(env, userId);
+        if (ent.access === "none") return json({ error: "اشتراك مطلوب", entitlement: ent }, 402, origin);
+        // serve paid bundle from KV (uploaded at deploy time)
+        const paid = await env.PAID.get("PAID_CONTENT");
+        if (!paid) return json({ error: "content unavailable" }, 503, origin);
+        // watermark with the user's email to deter leaking
+        const u = await env.DB.prepare("SELECT email FROM users WHERE id=?1").bind(userId).first();
+        return new Response(JSON.stringify({ entitlement: ent, watermark: u.email, content: JSON.parse(paid) }), {
+          headers: { "Content-Type": "application/json; charset=utf-8", ...CORS(origin) },
+        });
+      }
+
+      // ---- CREATE PAYMENT (PayTabs) ----
+      if (url.pathname === "/api/pay/create" && req.method === "POST") {
+        const userId = await getUserIdFromReq(env, req);
+        if (!userId) return json({ error: "unauthorized" }, 401, origin);
+        const { plan } = await req.json();
+        if (!PLANS[plan]) return json({ error: "خطة غير صالحة" }, 400, origin);
+        const u = await env.DB.prepare("SELECT email,name FROM users WHERE id=?1").bind(userId).first();
+        const cartId = "OMS-" + Date.now() + "-" + userId.slice(0, 8);
+        const currency = env.PAYTABS_CURRENCY || "IQD";
+        const amount = PLANS[plan].price;
+        await env.DB.prepare("INSERT INTO payments (id,user_id,plan,amount,currency,gateway,status,created_at) VALUES (?1,?2,?3,?4,?5,'paytabs','created',?6)")
+          .bind(cartId, userId, plan, amount, currency, Date.now()).run();
+        const pt = await paytabsCreatePage(env, { cartId, amount, currency, plan, user: u, siteUrl: env.SITE_URL });
+        if (pt && pt.redirect_url) {
+          await env.DB.prepare("UPDATE payments SET tran_ref=?1 WHERE id=?2").bind(pt.tran_ref || "", cartId).run();
+          return json({ redirect_url: pt.redirect_url, cart: cartId }, 200, origin);
+        }
+        return json({ error: "تعذّر إنشاء صفحة الدفع", detail: pt }, 502, origin);
+      }
+
+      // ---- PAYTABS WEBHOOK (server-to-server) ----
+      if (url.pathname === "/api/pay/webhook" && req.method === "POST") {
+        const payload = await req.json().catch(() => ({}));
+        const tranRef = payload.tran_ref;
+        const cartId = payload.cart_id;
+        if (!tranRef || !cartId) return json({ ok: false }, 400, origin);
+        // VERIFY by querying PayTabs directly (don't trust the webhook body alone)
+        const q = await paytabsQuery(env, tranRef);
+        const ok = q && q.payment_result && q.payment_result.response_status === "A"; // A = Authorised
+        const pay = await env.DB.prepare("SELECT * FROM payments WHERE id=?1").bind(cartId).first();
+        if (ok && pay && pay.status !== "paid") {
+          await env.DB.prepare("UPDATE payments SET status='paid', tran_ref=?1 WHERE id=?2").bind(tranRef, cartId).run();
+          await activateSubscription(env, { userId: pay.user_id, plan: pay.plan, source: "paytabs", amount: pay.amount, currency: pay.currency, ref: tranRef });
+        } else if (pay && !ok) {
+          await env.DB.prepare("UPDATE payments SET status='failed' WHERE id=?1").bind(cartId).run();
+        }
+        return json({ ok: true }, 200, origin);
+      }
+
+      // ---- ADMIN: manual ZainCash activation ----
+      if (url.pathname === "/api/admin/activate" && req.method === "POST") {
+        const token = (req.headers.get("Authorization") || "").replace(/^Bearer\s+/i, "");
+        if (token !== env.ADMIN_TOKEN) return json({ error: "forbidden" }, 403, origin);
+        const { email, plan, note } = await req.json();
+        if (!PLANS[plan]) return json({ error: "خطة غير صالحة" }, 400, origin);
+        const u = await env.DB.prepare("SELECT id FROM users WHERE email=?1").bind((email||"").toLowerCase()).first();
+        if (!u) return json({ error: "لا يوجد مستخدم بهذا البريد" }, 404, origin);
+        const end = await activateSubscription(env, { userId: u.id, plan, source: "zaincash_manual", amount: PLANS[plan].price, currency: "IQD", ref: note || "ZainCash manual" });
+        return json({ ok: true, email, plan, end_at: end }, 200, origin);
+      }
+
+      // ---- plans (public) ----
+      if (url.pathname === "/api/plans") return json({ plans: PLANS, previewHours: 2 }, 200, origin);
+
+      return json({ error: "not found" }, 404, origin);
+    } catch (e) {
+      return json({ error: "server error", detail: String(e) }, 500, origin);
+    }
+  },
+};

@@ -1,0 +1,30 @@
+# wrangler.toml — Cloudflare Worker config for OMSPrep+Atlas
+name = "omsprep-api"
+main = "worker.js"
+compatibility_date = "2025-01-01"
+
+# --- D1 database ---
+[[d1_databases]]
+binding = "DB"
+database_name = "omsprep-db"
+database_id = "PUT_YOUR_D1_DATABASE_ID_HERE"
+
+# --- KV namespaces ---
+[[kv_namespaces]]
+binding = "SESSIONS"
+id = "PUT_YOUR_SESSIONS_KV_ID_HERE"
+
+[[kv_namespaces]]
+binding = "PAID"
+id = "PUT_YOUR_PAID_KV_ID_HERE"
+
+# --- Non-secret vars (edit freely) ---
+[vars]
+SITE_URL = "https://YOUR-SITE.pages.dev"
+PAYTABS_REGION = "GLOBAL"     # ARE | SAU | EGY | JOR | OMN | KWT | GLOBAL
+PAYTABS_CURRENCY = "IQD"      # must match your PayTabs account currency
+
+# --- Secrets (DO NOT put here; set via: wrangler secret put NAME) ---
+#   PAYTABS_PROFILE_ID
+#   PAYTABS_SERVER_KEY
+#   ADMIN_TOKEN

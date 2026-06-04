@@ -1,0 +1,15 @@
+{
+  "name": "OMSPrep + Atlas — OMFS & Head/Neck Anatomy Reference",
+  "short_name": "OMSPrep+",
+  "description": "OMFS competitive-exam reference plus a 3-level Head & Neck Anatomy Atlas: notes, scenarios, flashcards and MCQs.",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0a0f1e",
+  "theme_color": "#0a0f1e",
+  "lang": "en",
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}
