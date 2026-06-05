@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Medical AI PDF Textbook Ingestion</title>
+    <!-- استدعاء مكتبة pdf.js بشكل صحيح من cdnjs لتعمل داخل المتصفح -->
+    <script src="https://cloudflare.com"></script>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f0f4f8; margin: 0; padding: 40px; display: flex; justify-content: center; align-items: center; min-height: 80vh; }
+        .upload-container { background: white; padding: 30px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0, 0, 0, 0.05); max-width: 550px; width: 100%; border-top: 5px solid #007acc; }
+        h2 { color: #007acc; margin-top: 0; font-size: 24px; }
+        p { color: #666; font-size: 14px; line-height: 1.5; }
+        .form-group { margin-bottom: 20px; }
+        label { display: block; margin-bottom: 8px; font-weight: 600; color: #333; }
+        input[type="text"] { width: 100%; padding: 10px; border: 1px solid #ccc; border-radius: 6px; box-sizing: border-box; font-size: 15px; }
+        input[type="file"] { display: block; margin-top: 5px; font-size: 14px; }
+        button { background: #007acc; color: white; border: none; padding: 12px 20px; border-radius: 6px; cursor: pointer; font-weight: bold; font-size: 16px; width: 100%; transition: background 0.2s; }
+        button:hover { background: #005999; }
+        #aiUploadStatus { margin-top: 15px; padding: 10px; border-radius: 6px; font-weight: bold; font-size: 14px; display: none; text-align: center; white-space: pre-line; }
+    </style>
+</head>
+<body>
+
+<div class="upload-container">
+    <h2>📚 Medical AI PDF Textbook Ingestion</h2>
+    <p>Select a medical textbook or chapter in <strong>.pdf</strong> format. The application will extract the text, split it into chunks, and store it with resume support upon disconnection.</p>
+    
+    <div class="form-group">
+        <label for="aiBookTitle">Book / Chapter Reference Title:</label>
+        <input type="text" id="aiBookTitle" placeholder="e.g., Davidson Medicine - Cardiology">
+    </div>
+    
+    <div class="form-group">
+        <label for="aiFileSelected">Choose Medical PDF File:</label>
+        <input type="file" id="aiFileSelected" accept=".pdf">
+    </div>
+    
+    <button onclick="processAndUploadPDF()">🚀 Extract & Upload PDF to AI</button>
+    
+    <div id="aiUploadStatus"></div>
+</div>
+
+<script>
+// تحديد الـ Worker الخاص بالمكتبة لتسريع معالجة ملفات الـ PDF
+pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cloudflare.com';
+
+const SERVER_URL = 'http://127.0.0';
+const CHUNK_SIZE = 3000;
+
+// دالة لتحديث صندوق الحالة والألوان بسهولة
+function updateStatus(text, type) {
+    const statusDiv = document.getElementById('aiUploadStatus');
+    statusDiv.style.display = "block";
+    statusDiv.innerText = text;
+    
+    if (type === 'error') {
+        statusDiv.style.backgroundColor = "#ffebee"; statusDiv.style.color = "#c62828";
+    } else if (type === 'success') {
+        statusDiv.style.backgroundColor = "#e8f5e9"; statusDiv.style.color = "#2e7d32";
+    } else {
+        statusDiv.style.backgroundColor = "#fff3e0"; statusDiv.style.color = "#ef6c00";
+    }
+}
+
+async function processAndUploadPDF() {
+    const title = document.getElementById('aiBookTitle').value.trim();
+    const fileInput = document.getElementById('aiFileSelected');
+    
+    if (!title || !fileInput.files.length) {
+        updateStatus("❌ Please enter a title and select a .pdf file!", "error");
+        return;
+    }
+    
+    updateStatus("⏳ Reading PDF and extracting text pages...", "pending");
+    
+    const file = fileInput.files[0];
+    const fileReader = new FileReader();
+    
+    fileReader.onload = async function() {
+        const typedarray = new Uint8Array(this.result);
+        
+        try {
+            // فتح مستند الـ PDF
+            const pdf = await pdfjsLib.getDocument(typedarray).promise;
+            let fullText = "";
+            
+            // قراءة كافة صفحات الكتاب بالكامل بدون استثناء
+            for (let i = 1; i <= pdf.numPages; i++) {
+                updateStatus(`⏳ Extracting text: Page ${i} of ${pdf.numPages}...`, "pending");
+                const page = await pdf.getPage(i);
+                const textContent = await page.getTextContent();
+                const pageText = textContent.items.map(item => item.str).join(" ");
+                fullText += pageText + "\n";
+            }
+            
+            if (!fullText.trim()) {
+                updateStatus("❌ No text could be extracted from this PDF!", "error");
+                return;
+            }
+
+            // مفتاح فريد لحفظ التقدم في ذاكرة المتصفح بناءً على اسم الكتاب حجمه
+            const storageKey = `upload_progress_${btoa(unescape(encodeURIComponent(title)))}_${file.size}`;
+            let lastUploadedChunk = parseInt(localStorage.getItem(storageKey)) || 0;
+
+            let chunkIndex = 0;
+            
+            for (let i = 0; i < fullText.length; i += CHUNK_SIZE) {
+                chunkIndex++;
+                
+                // تخطي المقاطع المرفوعة سابقاً
+                if (chunkIndex <= lastUploadedChunk) {
+                    continue;
+                }
+                
+                const chunkText = fullText.slice(i, i + CHUNK_SIZE);
+                updateStatus(`🚀 Uploading chunk ${chunkIndex}...\n(Progress: ${Math.round((i/fullText.length)*100)}%)`, "pending");
+                
+                let success = false;
+                let attempts = 0;
+                const maxAttempts = 3;
+
+                while (!success && attempts < maxAttempts) {
+                    try {
+                        attempts++;
+                        const response = await fetch(SERVER_URL, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ 
+                                bookTitle: `${title} - Part ${chunkIndex}`, 
+                                textContent: chunkText 
+                            })
+                        });
+                        
+                        const result = await response.json();
+                        
+                        if (result.success) {
+                            // حفظ رقم الـ chunk المرفوع بنجاح بداخل متصفح المستخدم
+                            localStorage.setItem(storageKey, chunkIndex);
+                            success = true;
+                        } else {
+                            updateStatus(`❌ Server Error on chunk ${chunkIndex}: ${result.error}`, "error");
+                            return; // توقف لوجود مشكلة برمجية من الخادم
+                        }
+                    } catch (uploadError) {
+                        console.error(`Attempt ${attempts} failed for chunk ${chunkIndex}`, uploadError);
+                        if (attempts < maxAttempts) {
+                            updateStatus(`⚠️ Connection issue. Retrying chunk ${chunkIndex} in 4s... (Attempt ${attempts}/${maxAttempts})`, "pending");
+                            await new Promise(resolve => setTimeout(resolve, 4000));
+                        } else {
+                            updateStatus(`🛑 Upload paused due to internet disconnection.\nLeave this window open, or reopen it later with the same file and title to resume from chunk ${chunkIndex}.`, "error");
+                            return; // إيقاف التنفيذ عند انقطاع النت تماماً
+                        }
+                    }
+                }
+            }
+            
+            // عند اكتمال الرفع بنجاح يتم تنظيف الذاكرة التخزينية للمتصفح
+            localStorage.removeItem(storageKey);
+            updateStatus(`🎉 Finished uploading all ${chunkIndex} chunks successfully!`, "success");
+            
+        } catch (error) {
+            console.error(error);
+            updateStatus("❌ Error processing or extracting text from PDF file!", "error");
+        }
+    };
+    
+    fileReader.readAsArrayBuffer(file);
+}
+</script>
+
+</body>
+</html>

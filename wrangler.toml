@@ -1,30 +1,30 @@
-# wrangler.toml — Cloudflare Worker config for OMSPrep+Atlas
 name = "omsprep-api"
 main = "worker.js"
-compatibility_date = "2025-01-01"
+compatibility_date = "2024-03-01"
 
-# --- D1 database ---
-[[d1_databases]]
-binding = "DB"
-database_name = "omsprep-db"
-database_id = "PUT_YOUR_D1_DATABASE_ID_HERE"
+account_id = "2069e309de540db18def59b77f186f93"
 
-# --- KV namespaces ---
+[vars]
+SITE_URL = "http://localhost:8787"
+PAYTABS_REGION = "GLOBAL"
+PAYTABS_CURRENCY = "IQD"
+
 [[kv_namespaces]]
 binding = "SESSIONS"
-id = "PUT_YOUR_SESSIONS_KV_ID_HERE"
+id ="99020b874a87463fa4ee36cd76c54407"
 
 [[kv_namespaces]]
 binding = "PAID"
-id = "PUT_YOUR_PAID_KV_ID_HERE"
+id = "ddccc2fbd74f453ca10fb3e85318b4fa"
 
-# --- Non-secret vars (edit freely) ---
-[vars]
-SITE_URL = "https://YOUR-SITE.pages.dev"
-PAYTABS_REGION = "GLOBAL"     # ARE | SAU | EGY | JOR | OMN | KWT | GLOBAL
-PAYTABS_CURRENCY = "IQD"      # must match your PayTabs account currency
+[[d1_databases]]
+binding = "DB"
+database_name = "omsprep-db"
+database_id = "867fd320-b61f-4b7b-96c9-e6a381d1d694"
 
-# --- Secrets (DO NOT put here; set via: wrangler secret put NAME) ---
-#   PAYTABS_PROFILE_ID
-#   PAYTABS_SERVER_KEY
-#   ADMIN_TOKEN
+[ai]
+binding = "AI"
+
+[[vectorize]]
+binding = "VECTORIZE"
+index_name = "medical_books_index"

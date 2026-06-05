@@ -1,23 +1,10 @@
 /**
- * OMSPrep + Atlas — Cloudflare Worker (backend)
- * Handles: signup/login (sessions), 2-hour free preview, plans,
- *          PayTabs hosted payment + webhook, manual ZainCash activation (admin),
- *          and serving the PROTECTED (paid) content only to entitled users.
- *
- * Bindings (set in wrangler.toml / dashboard):
- *   DB        -> D1 database (schema.sql)
- *   SESSIONS  -> KV namespace (login sessions)
- *   PAID      -> static paid-content.json bundled as a module asset OR stored in KV "PAID_CONTENT"
- * Secrets (wrangler secret put ...):
- *   PAYTABS_PROFILE_ID, PAYTABS_SERVER_KEY, PAYTABS_REGION (e.g. "ARE" or "global"),
- *   ADMIN_TOKEN  (a long random string you keep private for manual ZainCash activation)
- *   SITE_URL     (e.g. https://omsprep.pages.dev) for return/callback URLs
- *
- * Plans (prices in IQD; PayTabs charges in its account currency — see notes in deploy guide):
- *   2m  = 5000  (2 months)
- *   3m  = 10000 (3 months)
- *   12m = 25000 (12 months)
- */
+* OMSPrep + Atlas — Cloudflare Worker (backend)
+* Handles: signup/login (sessions), 2-hour free preview, plans,
+* PayTabs hosted payment + webhook, manual ZainCash activation (admin),
+* serving the PROTECTED (paid) content only to entitled users,
+* AND Integrated AI (Vectorize + Llama 3) for Medical Exam Generation.
+*/
 
 const PLANS = {
   "2m":  { months: 2,  price: 5000,  label: "شهرين"     },
@@ -53,7 +40,7 @@ async function hashPassword(password, saltHex) {
 async function verifyPassword(password, stored) {
   const [saltHex, hashHex] = stored.split(":");
   const recomputed = await hashPassword(password, saltHex);
-  return timingSafeEq(recomputed.split(":")[1], hashHex);
+  return timingSafeEq(recomputed.split(":"), hashHex);
 }
 function timingSafeEq(a, b) {
   if (a.length !== b.length) return false;
@@ -61,7 +48,7 @@ function timingSafeEq(a, b) {
   return r === 0;
 }
 function bytesToHex(b){return [...b].map(x=>x.toString(16).padStart(2,"0")).join("");}
-function hexToBytes(h){const a=new Uint8Array(h.length/2);for(let i=0;i<a.length;i++)a[i]=parseInt(h.substr(i*2,2),16);return a;}
+function hexToBytes(h){const a=new Uint8Array(h.length/2);for(let i=0; i<a.length; i++)a[i]=parseInt(h.substr(i*2,2),16);return a;}
 function uuid(){return crypto.randomUUID();}
 
 // ---------- session helpers ----------
@@ -79,14 +66,12 @@ async function getUserIdFromReq(env, req){
 
 // ---------- entitlement ----------
 async function getEntitlement(env, userId){
-  // returns {access:'full'|'preview'|'none', until:epochMs|null, plan|null}
   const now = Date.now();
   const sub = await env.DB.prepare(
     "SELECT * FROM subscriptions WHERE user_id=?1 AND status='active' AND end_at>?2 ORDER BY end_at DESC LIMIT 1"
   ).bind(userId, now).first();
   if (sub) return { access: "full", until: sub.end_at, plan: sub.plan };
 
-  // preview: 2 hours from first start
   const user = await env.DB.prepare("SELECT preview_used_at FROM users WHERE id=?1").bind(userId).first();
   if (user && user.preview_used_at) {
     const until = user.preview_used_at + PREVIEW_MS;
@@ -97,15 +82,14 @@ async function getEntitlement(env, userId){
 
 // ---------- PayTabs ----------
 function paytabsBase(region){
-  // region-specific endpoints; default to global secure endpoint
   const map = {
-    ARE: "https://secure.paytabs.com",
-    SAU: "https://secure.paytabs.sa",
-    EGY: "https://secure-egypt.paytabs.com",
-    JOR: "https://secure-jordan.paytabs.com",
-    OMN: "https://secure-oman.paytabs.com",
-    KWT: "https://secure-kuwait.paytabs.com",
-    GLOBAL: "https://secure-global.paytabs.com",
+    ARE: "https://paytabs.com",
+    SAU: "https://paytabs.sa",
+    EGY: "https://paytabs.com",
+    JOR: "https://paytabs.com",
+    OMN: "https://paytabs.com",
+    KWT: "https://paytabs.com",
+    GLOBAL: "https://paytabs.com",
   };
   return map[region] || map.GLOBAL;
 }
@@ -122,8 +106,8 @@ async function paytabsCreatePage(env, { cartId, amount, currency, plan, user, si
     cart_description: "OMSPrep+Atlas subscription: " + plan,
     paypage_lang: "ar",
     customer_details: { name: user.name || "Student", email: user.email },
-    callback: siteUrl + "/api/pay/webhook",          // server-to-server (IPN)
-    return: siteUrl + "/?pay=done&cart=" + cartId,     // browser redirect after pay
+    callback: siteUrl + "/api/pay/webhook",
+    return: siteUrl + "/?pay=done&cart=" + cartId,
   };
   const res = await fetch(base + "/payment/request", {
     method: "POST",
@@ -152,7 +136,6 @@ async function activateSubscription(env, { userId, plan, source, amount, currenc
   ).bind(uuid(), userId, plan, source, now, end, amount||PLANS[plan].price, currency||"IQD", ref||"").run();
   return end;
 }
-
 // ---------- main fetch ----------
 export default {
   async fetch(req, env) {
@@ -214,10 +197,8 @@ export default {
         if (!userId) return json({ error: "unauthorized" }, 401, origin);
         const ent = await getEntitlement(env, userId);
         if (ent.access === "none") return json({ error: "اشتراك مطلوب", entitlement: ent }, 402, origin);
-        // serve paid bundle from KV (uploaded at deploy time)
         const paid = await env.PAID.get("PAID_CONTENT");
         if (!paid) return json({ error: "content unavailable" }, 503, origin);
-        // watermark with the user's email to deter leaking
         const u = await env.DB.prepare("SELECT email FROM users WHERE id=?1").bind(userId).first();
         return new Response(JSON.stringify({ entitlement: ent, watermark: u.email, content: JSON.parse(paid) }), {
           headers: { "Content-Type": "application/json; charset=utf-8", ...CORS(origin) },
@@ -250,9 +231,8 @@ export default {
         const tranRef = payload.tran_ref;
         const cartId = payload.cart_id;
         if (!tranRef || !cartId) return json({ ok: false }, 400, origin);
-        // VERIFY by querying PayTabs directly (don't trust the webhook body alone)
         const q = await paytabsQuery(env, tranRef);
-        const ok = q && q.payment_result && q.payment_result.response_status === "A"; // A = Authorised
+        const ok = q && q.payment_result && q.payment_result.response_status === "A";
         const pay = await env.DB.prepare("SELECT * FROM payments WHERE id=?1").bind(cartId).first();
         if (ok && pay && pay.status !== "paid") {
           await env.DB.prepare("UPDATE payments SET status='paid', tran_ref=?1 WHERE id=?2").bind(tranRef, cartId).run();
@@ -278,9 +258,74 @@ export default {
       // ---- plans (public) ----
       if (url.pathname === "/api/plans") return json({ plans: PLANS, previewHours: 2 }, 200, origin);
 
+      // =======================================================================
+      // 🌟 ميزات الذكاء الاصطناعي الجديدة المدمجة بالكامل (AI Features) 🌟
+      // =======================================================================
+
+           // =======================================================================
+      // 🌟 ميزات الذكاء الاصطناعي الجديدة المدمجة بالكامل (AI Features) 🌟
+      // =======================================================================
+
+           // 1. مسار رفع وتخزين نصوص المراجع والكتب الطبية في الكلاود (Vectorize)
+      if (url.pathname === "/api/upload-book" && req.method === "POST") {
+        const { bookTitle, textContent } = await req.json();
+        if (!bookTitle || !textContent) return json({ error: "Missing required data" }, 400, origin);
+        
+        // تقليص وتنظيف النص الطبي برمجياً ليتوافق تماماً مع الحجم الأقصى المسموح به لخوادم الـ AI
+        const cleanText = textContent.substring(0, 1500);
+        
+        // استدعاء نموذج الـ Embeddings
+        const embeddingResponse = await env.AI.run('@cf/baai/bge-base-en-v1.5', { text: [cleanText] });
+        const vectors = embeddingResponse.data[0]; // استخراج المصفوفة الرقمية الصافية الأولى
+        
+        if (!vectors) return json({ error: "Failed to generate text embeddings from Cloudflare AI" }, 500, origin);
+        
+        // تخزين المصفوفات الرقمية والنص الطبي الصافي داخل قاعدة البيانات السحابية الحقيقية المفعّلة
+        await env.VECTORIZE.upsert([
+          { 
+            id: `book-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`, 
+            values: vectors, 
+            metadata: { title: bookTitle, text: cleanText } 
+          }
+        ]);
+        return json({ success: true, message: "Chunk hosted and indexed inside Vectorize successfully!" }, 200, origin);
+      }
+
+
+      // 2. مسار توليد سؤال طبي ذكي (Llama 3.1) باللغة الإنجليزية
+      if (url.pathname === "/api/generate-question" && req.method === "GET") {
+        const prompt = `You are an expert medical professor. Create one challenging multiple-choice question (MCQ) in clinical medicine for medical students. 
+        Your response must contain ONLY a valid JSON object matching this structure exactly, with NO markdown formatting, NO backticks, and NO surrounding text:
+        {
+          "question": "text of the question",
+          "options": ["Option A", "Option B", "Option C", "Option D"],
+          "correct_answer": "exactly one matching option from above"
+        }`;
+
+        const aiResponse = await env.AI.run('@cf/meta/llama-3.1-8b-instruct', { prompt });
+        return new Response(JSON.stringify(aiResponse), { headers: { "Content-Type": "application/json; charset=utf-8", ...CORS(origin) } });
+      }
+
+      // 3. مسار مراجعة إجابة الطالب الخاطئة وشرح السبب باللغة الإنجليزية
+      if (url.pathname === "/api/review-answer" && req.method === "POST") {
+        const { question, studentAnswer, correctAnswer } = await req.json();
+
+        const prompt = `Question: "${question}".
+        Correct answer: "${correctAnswer}".
+        Student chose a wrong answer: "${studentAnswer}".
+        
+        Write a detailed, educational medical explanation in English explaining why the student's choice is incorrect and why the correct answer is right based on trusted medical textbooks without hallucination.`;
+
+        const aiResponse = await env.AI.run('@cf/meta/llama-3.1-8b-instruct', { prompt });
+        return json({ explanation: aiResponse }, 200, origin);
+      }
+
+     
+
       return json({ error: "not found" }, 404, origin);
     } catch (e) {
       return json({ error: "server error", detail: String(e) }, 500, origin);
     }
-  },
+  }
 };
+
