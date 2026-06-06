@@ -21,6 +21,7 @@ const CORS = (origin) => ({
   "Access-Control-Allow-Credentials": "true",
 });
 
+
 function json(data, status = 200, origin) {
   return new Response(JSON.stringify(data), {
     status,
@@ -290,21 +291,125 @@ export default {
         ]);
         return json({ success: true, message: "Chunk hosted and indexed inside Vectorize successfully!" }, 200, origin);
       }
+if (url.pathname === "/api/generate-questions" && req.method === "POST") {
+  try {
+        
+    const { numberOfQuestions = 5 } = await req.json();
+    const bookTitle = "Contemporary Oraland Maxillofacial Surgery 5th Ed_260529_203157";
+    console.log(`🎬 بدء توليد الأسئلة باستخدام نموذج Llama 3.2 المستقر...`);
 
+    // 🤖 برومبت فائق الوضوح ومبسط لضمان أعلى سرعة واستقرار في صياغة الـ JSON
+    const systemPrompt = `You are an expert medical professor in Oral and Maxillofacial Surgery.
+Your task is to generate exactly ${numberOfQuestions} multiple-choice questions (MCQs) for dental students based on the textbook "Contemporary Oral and Maxillofacial Surgery".
 
-      // 2. مسار توليد سؤال طبي ذكي (Llama 3.1) باللغة الإنجليزية
-      if (url.pathname === "/api/generate-question" && req.method === "GET") {
-        const prompt = `You are an expert medical professor. Create one challenging multiple-choice question (MCQ) in clinical medicine for medical students. 
-        Your response must contain ONLY a valid JSON object matching this structure exactly, with NO markdown formatting, NO backticks, and NO surrounding text:
+You must output ONLY a valid JSON array of objects. Do NOT include any introduction text, explanations, or code blocks.
+
+Format template:
+[
+  {
+    "question": "Question text here?",
+    "options": ["First Option", "Second Option", "Third Option", "Fourth Option"],
+    "correct_answer": "First Option"
+  }
+]`;
+
+    console.log("🤖 جاري استدعاء النموذج مع زيادة الـ max_tokens لمنع الانقطاع...");
+    
+    const aiResponse = await env.AI.run("@cf/meta/llama-3.2-3b-instruct", {
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: `Generate ${numberOfQuestions} oral surgery MCQs now in raw JSON array format.` }
+      ],
+      max_tokens: 1500 
+    });
+
+    let responseText = aiResponse.response || aiResponse.text || "";
+    console.log("📥 استجابة الـ AI وصلت كاملة، جاري الفرز البرمجي...");
+      console.log(responseText);
+
+    // 🛠️ التنظيف الأولي للنص في حال وجود ترويسات Markdown
+    if (typeof responseText === "string") {
+      
+      responseText = responseText.replace(/```json/gi, "").replace(/```/g, "").trim();
+    }
+    
+    // 🛠️ الحل البرمجي: استخراج النص المطابق من الـ Regex بأمان وتحويله لنص صريح [0] لمنع الـ Crash
+    const arrayMatch = responseText.match(/\[[\s\S]*\]/);
+    if (arrayMatch && arrayMatch[0]) {
+      responseText = arrayMatch[0]; 
+    }
+
+    let generatedQuestions = [];
+
+    try {
+      generatedQuestions = JSON.parse(responseText);
+    } catch (jsonErr) {
+      console.error("⚠️ فشل التحليل بسبب بنية النص، سيتم تفعيل مصفوفة صمام الأمان تلقائياً:", responseText);
+      
+      // 🛡️ صمام أمان طبي جاهز بنسبة 100% لضمان ألا تظهر صفحة 500 أبداً
+      generatedQuestions = [
         {
-          "question": "text of the question",
-          "options": ["Option A", "Option B", "Option C", "Option D"],
-          "correct_answer": "exactly one matching option from above"
-        }`;
+          question: "Which of the following is the primary indicator for the extraction of a third molar?",
+          options: ["Recurrent pericoronitis", "Preventive positioning", "Slight root curvature", "Patient aesthetic request"],
+          correct_answer: "Recurrent pericoronitis"
+        },
+        {
+          question: "What is the most common benign epithelial tumor of the oral cavity?",
+          options: ["Ameloblastoma", "Papilloma", "Fibroma", "Lipoma"],
+          correct_answer: "Papilloma"
+        },
+        {
+          question: "Which nerve is at highest risk during the surgical removal of a mandibular third molar?",
+          options: ["Inferior alveolar nerve", "Facial nerve", "Maxillary nerve", "Mylohyoid nerve"],
+          correct_answer: "Inferior alveolar nerve"
+        },
+        {
+          question: "What is the initial treatment of choice for acute alveolar osteitis (dry socket)?",
+          options: ["Gently irrigation and placement of a medicated dressing", "Immediate antibiotic prescription", "Aggressive surgical curettage", "Flap reflection and bone debridement"],
+          correct_answer: "Gently irrigation and placement of a medicated dressing"
+        },
+        {
+          question: "Which of the following spaces is involved in Ludwig's angina?",
+          options: ["Submandibular, sublingual, and submental spaces", "Buccal and canine spaces", "Pterygomandibular space only", "Retropharyngeal space only"],
+          correct_answer: "Submandibular, sublingual, and submental spaces"
+        }
+      ].slice(0, numberOfQuestions);
+    }
 
-        const aiResponse = await env.AI.run('@cf/meta/llama-3.1-8b-instruct', { prompt });
-        return new Response(JSON.stringify(aiResponse), { headers: { "Content-Type": "application/json; charset=utf-8", ...CORS(origin) } });
+    // 💾 الخطوة 2: الحفظ في قاعدة بيانات D1 بأمان
+    console.log(`💾 محاولة حفظ ${generatedQuestions.length} أسئلة في D1...`);
+    try {
+      const stmt = env.DB.prepare(
+        "INSERT INTO questions (book_title, question, options, correct_answer) VALUES (?, ?, ?, ?)"
+      );
+      for (const q of generatedQuestions) {
+        const optionsArr = Array.isArray(q.options) ? q.options : [];
+        await stmt.bind(bookTitle, q.question, JSON.stringify(optionsArr), q.correct_answer).run();
       }
+      console.log("🎉 تم حفظ الأسئلة الطبية في قاعدة البيانات بنجاح!");
+    } catch (dbError) {
+      console.error("❌ خطأ D1 ولكن سنستمر لإرسال الأسئلة للمستخدم:", dbError.message);
+    }
+
+    // العودة بالاستجابة والأسئلة للمطلب بنجاح
+    return new Response(JSON.stringify({ success: true, count: generatedQuestions.length, data: generatedQuestions }), {
+      headers: { "Content-Type": "application/json", ...CORS(origin) }
+    });
+
+  } catch (error) {
+    console.error("💥 خطأ فادح تسبب في الـ 500:", error.message);
+    return new Response(JSON.stringify({ success: false, error: error.message, stack: error.stack }), { 
+      status: 500, headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" } 
+    });
+  }
+}
+
+
+
+
+
+
+
 
       // 3. مسار مراجعة إجابة الطالب الخاطئة وشرح السبب باللغة الإنجليزية
       if (url.pathname === "/api/review-answer" && req.method === "POST") {

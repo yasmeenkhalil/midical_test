@@ -69,7 +69,7 @@ async function processAndSeedPDF() {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
-              bookTitle: `${BOOK_TITLE} - Part ${index}`,
+              bookTitle: `${BOOK_TITLE}`,
               textContent: chunkText,
             }),
           });

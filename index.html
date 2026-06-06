@@ -304,24 +304,102 @@ function renderCards(tv,C){
 function flip(){fcBack=!fcBack;renderTab();}
 function fcNext(){const C=CONTENT[cur];fcIndex=(fcIndex+1)%C.flashcards.length;fcBack=false;renderTab();}
 function fcPrev(){const C=CONTENT[cur];fcIndex=(fcIndex-1+C.flashcards.length)%C.flashcards.length;fcBack=false;renderTab();}
-
-function renderQuiz(tv,C){
- if(!quizState){
-  tv.innerHTML=`<div class="block"><h3>📝 ${COURSE.find(s=>s.id===cur).name} Quiz</h3>
-   <p>${C.quiz.length} exam-style MCQs with an explanation for each answer.</p>
-   ${progress[cur]&&progress[cur].best!=null?`<p style="color:var(--gold)">Best score: <b>${progress[cur].best}%</b></p>`:''}
-   <button class="btn" style="margin-top:10px" onclick="startQuiz()">Start quiz →</button></div>`;
+// 1. تحديث دالة العرض لتمرير اسم القسم بدقة عند الضغط على الزر
+function renderQuiz(tv, C) {
+ if (!quizState) {
+  // جلب اسم القسم الطبي الحالي من مصفوفة الكورسات المتاحة لديك
+  const topicName = COURSE.find(s => s.id === cur).name;
+  
+  tv.innerHTML = `<div class="block">
+   <h3>📝 ${topicName} Quiz</h3>
+   <p>Exam-style MCQs with an explanation for each answer.</p>
+   ${progress[cur] && progress[cur].best != null ? `<p style="color:var(--gold)">Best score: <b>${progress[cur].best}%</b></p>` : ''}
+   <!-- تم تعديل الزر ليستدعي الدالة الجديدة ويمرر اسم القسم -->
+   <button class="btn" style="margin-top:10px" onclick="startQuizFromServer('${topicName}')">Start quiz →</button>
+  </div>`;
   return;
  }
- if(quizState.done)return renderResult(tv,C);
- const i=quizState.i,q=quizState.order[i];
- tv.innerHTML=`<div style="color:var(--muted);font-size:13px;margin-bottom:8px">Question ${i+1} of ${quizState.order.length}</div>
+ if (quizState.done) return renderResult(tv, C);
+ const i = quizState.i, q = quizState.order[i];
+ tv.innerHTML = `<div style="color:var(--muted);font-size:13px;margin-bottom:8px">Question ${i + 1} of ${quizState.order.length}</div>
   <div class="q"><div class="qt">${q.q}</div>
-  ${q.o.map((o,k)=>`<div class="opt" id="opt${k}" onclick="answer(${k})"><span class="k">${'ABCD'[k]}</span><span>${o}</span></div>`).join('')}
+  ${q.o.map((o, k) => `<div class="opt" id="opt${k}" onclick="answer(${k})"><span class="k">${'ABCD'[k]}</span><span>${o}</span></div>`).join('')}
   <div class="exp" id="exp">${expHTML(q)}</div></div>
-  <div class="btnrow" style="justify-content:flex-start"><button class="btn" id="next" style="display:none" onclick="nextQ()">${i<quizState.order.length-1?'Next →':'Finish & see score'}</button></div>`;
+  <div class="btnrow" style="justify-content:flex-start"><button class="btn" id="next" style="display:none" onclick="nextQ()">${i < quizState.order.length - 1 ? 'Next →' : 'Finish & see score'}</button></div>`;
 }
-function startQuiz(){const C=CONTENT[cur];let pool=C.quiz;if(C.hasLevels){pool=pool.filter(q=>lvlVisible(q.lvl||'medium'));if(!pool.length)pool=C.quiz;}const order=[...pool];quizState={i:0,score:0,answered:false,done:false,order};renderTab();}
+
+async function startQuizFromServer(topicName) {
+  const btn = document.querySelector(".block .btn");
+
+  if (btn) {
+    btn.innerText = "⏳ Generating quiz from textbook...";
+    btn.disabled = true;
+  }
+
+  const BOOK_MAPPING = {
+    // "Exodontia & Complications": "An Outline of Oral Surgery Part 1"
+  };
+
+  // const actualBookTitle = BOOK_MAPPING[topicName] || topicName;
+  const actualBookTitle = "Contemporary Oraland Maxillofacial Surgery 5th Ed_260529_203157";  
+  try {
+    const response = await fetch(
+      "http://127.0.0.1:8787/api/generate-questions",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          bookTitle: actualBookTitle,
+          numberOfQuestions: 5
+        })
+      }
+    );
+
+    const result = await response.json();
+
+    if (!result.success) {
+      throw new Error(result.error || "Failed to generate quiz");
+    }
+
+
+    const pool = result.data.map(item => ({
+      q: item.question,
+      o: item.options,
+
+      // تحويل نص الإجابة الصحيحة إلى رقم الخيار
+      a: item.options.findIndex(
+        option => option === item.correct_answer
+      ),
+
+      exp: item.explanation || ""
+    }));
+    console.log(pool);
+    
+
+    quizState = {
+      i: 0,
+      score: 0,
+      answered: false,
+      done: false,
+      order: pool
+    };
+
+    renderTab();
+
+  } catch (error) {
+    console.error(error);
+
+    alert(`❌ ${error.message}`);
+
+    if (btn) {
+      btn.innerText = "Start quiz →";
+      btn.disabled = false;
+    }
+  }
+}
+
 function answer(k){
  if(quizState.answered)return;quizState.answered=true;
  const q=quizState.order[quizState.i];

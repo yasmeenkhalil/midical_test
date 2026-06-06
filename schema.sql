@@ -37,5 +37,15 @@ CREATE TABLE IF NOT EXISTS payments (
   created_at  INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS questions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    book_title TEXT,
+    question TEXT NOT NULL,
+    options TEXT NOT NULL, -- تخزن كمصفوفة JSON للمخارات الأربعة
+    correct_answer TEXT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+
 CREATE INDEX IF NOT EXISTS idx_sub_user ON subscriptions(user_id);
 CREATE INDEX IF NOT EXISTS idx_pay_user ON payments(user_id);
