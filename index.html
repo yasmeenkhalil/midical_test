@@ -369,7 +369,6 @@ async function startQuizFromServer(topicName) {
 
       e: item.explanation || ""
     }));
-    console.log("poooooooooooooooooooooooooolll " + pool);
     
 
     quizState = {
@@ -395,7 +394,6 @@ async function startQuizFromServer(topicName) {
 }
 
 function answer(k){
-  console.log(k);
   
 
  if(quizState.answered) return;

@@ -361,8 +361,6 @@ ${rawChunk}
     const bookTitle =
       "Contemporary Oraland Maxillofacial Surgery 5th Ed_260529_203157";
 
-    console.log(`🎬 بدء توليد ${numberOfQuestions} سؤال...`);
-
     const systemPrompt = `
 You are an expert medical professor in Oral and Maxillofacial Surgery.
 
