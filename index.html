@@ -293,6 +293,7 @@ function renderTab(){
  else if(tab==="cards"){renderCards(tv,C);}
  else{renderQuiz(tv,C);}
 }
+
 function renderCards(tv,C){
  const card=C.flashcards[fcIndex];
  tv.innerHTML=`<div class="fc-wrap">
@@ -334,14 +335,7 @@ async function startQuizFromServer(topicName) {
   if (btn) {
     btn.innerText = "⏳ Generating quiz from textbook...";
     btn.disabled = true;
-  }
-
-  const BOOK_MAPPING = {
-    // "Exodontia & Complications": "An Outline of Oral Surgery Part 1"
-  };
-
-  // const actualBookTitle = BOOK_MAPPING[topicName] || topicName;
-  const actualBookTitle = "Contemporary Oraland Maxillofacial Surgery 5th Ed_260529_203157";  
+  }  
   try {
     const response = await fetch(
       "http://127.0.0.1:8787/api/generate-questions",
@@ -351,7 +345,7 @@ async function startQuizFromServer(topicName) {
           "Content-Type": "application/json"
         },
         body: JSON.stringify({
-          bookTitle: actualBookTitle,
+          topic: topicName,
           numberOfQuestions: 5
         })
       }
@@ -369,13 +363,13 @@ async function startQuizFromServer(topicName) {
       o: item.options,
 
       // تحويل نص الإجابة الصحيحة إلى رقم الخيار
-      a: item.options.findIndex(
+      c: item.options.findIndex(
         option => option === item.correct_answer
       ),
 
-      exp: item.explanation || ""
+      e: item.explanation || ""
     }));
-    console.log(pool);
+    console.log("poooooooooooooooooooooooooolll " + pool);
     
 
     quizState = {
@@ -401,13 +395,98 @@ async function startQuizFromServer(topicName) {
 }
 
 function answer(k){
- if(quizState.answered)return;quizState.answered=true;
- const q=quizState.order[quizState.i];
- document.getElementById('opt'+q.c).classList.add('correct');
- if(k!==q.c){document.getElementById('opt'+k).classList.add('wrong');recordMistake({topic:(COURSE.find(s=>s.id===cur)||{}).name||cur,q:q.q,o:q.o,c:q.c,e:q.e,w:q.w,ty:q.ty,picked:k});}else quizState.score++;
- document.getElementById('exp').classList.add('show');
- document.getElementById('next').style.display='inline-block';
+  console.log(k);
+  
+
+ if(quizState.answered) return;
+
+ quizState.answered = true;
+
+ const q = quizState.order[quizState.i];
+
+ // دعم أسئلة AI
+ const correctIndex =
+   q.a !== undefined ? q.a : q.c;
+
+ const correctEl =
+   document.getElementById('opt' + correctIndex);
+
+ if(correctEl){
+   correctEl.classList.add('correct');
+ }
+
+ if(k !== correctIndex){
+
+   const wrongEl =
+     document.getElementById('opt' + k);
+
+   if(wrongEl){
+     wrongEl.classList.add('wrong');
+   }
+
+   recordMistake({
+     topic:(COURSE.find(s=>s.id===cur)||{}).name||cur,
+     q:q.q,
+     o:q.o,
+     c:correctIndex,
+     e:q.exp || q.e || "",
+     picked:k
+   });
+
+ } else {
+
+   quizState.score++;
+
+ }
+
+ // عرض الشرح
+ const expBox =
+   document.getElementById('exp');
+
+ if(expBox){
+
+   expBox.innerHTML = `
+     <div style="
+       margin-top:12px;
+       padding:12px;
+       border-radius:12px;
+       background:#1e293b;
+       border:1px solid #334155;
+       line-height:1.7;
+     ">
+       <div style="color:#22c55e;font-weight:bold;margin-bottom:8px">
+         ✅ Correct Answer:
+       </div>
+
+       <div>
+         ${q.o[correctIndex]}
+       </div>
+
+       ${
+         (q.exp || q.e)
+         ? `
+         <hr style="margin:10px 0;border-color:#334155">
+
+         <div style="color:#fbbf24;font-weight:bold;margin-bottom:6px">
+           📖 Explanation
+         </div>
+
+         <div>
+           ${q.exp || q.e}
+         </div>
+         `
+         : ""
+       }
+     </div>
+   `;
+
+   expBox.classList.add('show');
+ }
+
+ document.getElementById('next').style.display =
+   'inline-block';
 }
+
 function nextQ(){
  if(quizState.i<quizState.order.length-1){quizState.i++;quizState.answered=false;renderTab();}
  else{quizState.done=true;const pct=Math.round(100*quizState.score/quizState.order.length);

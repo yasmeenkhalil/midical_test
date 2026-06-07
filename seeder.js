@@ -38,10 +38,9 @@ async function processAndSeedPDF() {
     console.log("✅ PDF extracted successfully");
     console.log(`📄 Characters: ${fullText.length}`);
 
-    const chunkSize = 3000;
+    const chunkSize = 1500;
     let index = 0;
     
-    // جلب نقطة التوقف السابقة إن وجدت
     const lastUploaded = getLastUploadedChunk();
     if (lastUploaded > 0) {
       console.log(`🔄 Resuming from chunk ${lastUploaded + 1}...`);

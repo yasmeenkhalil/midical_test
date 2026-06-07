@@ -145,6 +145,7 @@ export default {
     if (req.method === "OPTIONS") return new Response(null, { headers: CORS(origin) });
 
     try {
+ 
       // ---- SIGNUP ----
       if (url.pathname === "/api/signup" && req.method === "POST") {
         const { email, password, name } = await req.json();
@@ -268,143 +269,230 @@ export default {
       // =======================================================================
 
            // 1. مسار رفع وتخزين نصوص المراجع والكتب الطبية في الكلاود (Vectorize)
-      if (url.pathname === "/api/upload-book" && req.method === "POST") {
-        const { bookTitle, textContent } = await req.json();
-        if (!bookTitle || !textContent) return json({ error: "Missing required data" }, 400, origin);
-        
-        // تقليص وتنظيف النص الطبي برمجياً ليتوافق تماماً مع الحجم الأقصى المسموح به لخوادم الـ AI
-        const cleanText = textContent.substring(0, 1500);
-        
-        // استدعاء نموذج الـ Embeddings
-        const embeddingResponse = await env.AI.run('@cf/baai/bge-base-en-v1.5', { text: [cleanText] });
-        const vectors = embeddingResponse.data[0]; // استخراج المصفوفة الرقمية الصافية الأولى
-        
-        if (!vectors) return json({ error: "Failed to generate text embeddings from Cloudflare AI" }, 500, origin);
-        
-        // تخزين المصفوفات الرقمية والنص الطبي الصافي داخل قاعدة البيانات السحابية الحقيقية المفعّلة
-        await env.VECTORIZE.upsert([
-          { 
-            id: `book-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`, 
-            values: vectors, 
-            metadata: { title: bookTitle, text: cleanText } 
-          }
-        ]);
-        return json({ success: true, message: "Chunk hosted and indexed inside Vectorize successfully!" }, 200, origin);
-      }
-if (url.pathname === "/api/generate-questions" && req.method === "POST") {
-  try {
-        
-    const { numberOfQuestions = 5 } = await req.json();
-    const bookTitle = "Contemporary Oraland Maxillofacial Surgery 5th Ed_260529_203157";
-    console.log(`🎬 بدء توليد الأسئلة باستخدام نموذج Llama 3.2 المستقر...`);
+ if (url.pathname === "/api/upload-book" && req.method === "POST") {
+  const { bookTitle, textContent } = await req.json();
 
-    // 🤖 برومبت فائق الوضوح ومبسط لضمان أعلى سرعة واستقرار في صياغة الـ JSON
-    const systemPrompt = `You are an expert medical professor in Oral and Maxillofacial Surgery.
-Your task is to generate exactly ${numberOfQuestions} multiple-choice questions (MCQs) for dental students based on the textbook "Contemporary Oral and Maxillofacial Surgery".
+  if (!bookTitle || !textContent)
+    return json({ error: "Missing required data" }, 400, origin);
 
-You must output ONLY a valid JSON array of objects. Do NOT include any introduction text, explanations, or code blocks.
+  const chunkSize = 1200;
 
-Format template:
-[
-  {
-    "question": "Question text here?",
-    "options": ["First Option", "Second Option", "Third Option", "Fourth Option"],
-    "correct_answer": "First Option"
+  const chunks = [];
+  for (let i = 0; i < textContent.length; i += chunkSize) {
+    chunks.push(textContent.slice(i, i + chunkSize));
   }
-]`;
 
-    console.log("🤖 جاري استدعاء النموذج مع زيادة الـ max_tokens لمنع الانقطاع...");
-    
-    const aiResponse = await env.AI.run("@cf/meta/llama-3.2-3b-instruct", {
-      messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: `Generate ${numberOfQuestions} oral surgery MCQs now in raw JSON array format.` }
-      ],
-      max_tokens: 1500 
+  console.log(`📦 Total chunks: ${chunks.length}`);
+
+  for (let i = 0; i < chunks.length; i++) {
+    const rawChunk = chunks[i];
+
+    // 🔥 أهم تعديل: نخلي الـ AI يفهم السياق
+    const enrichedText = `
+Book Title: ${bookTitle}
+
+Medical Text:
+${rawChunk}
+    `.trim();
+
+    // 🔥 embedding
+    const embeddingResponse = await env.AI.run(
+      "@cf/baai/bge-base-en-v1.5",
+      { text: [enrichedText] }
+    );
+
+    const vectors = embeddingResponse.data?.[0];
+
+    if (!vectors) {
+      console.log(`❌ Failed chunk ${i}`);
+      continue;
+    }
+
+    // 🔥 Vectorize storage (مهم نحفظ الكتاب + النص + رقم الشنق)
+    await env.VECTORIZE.upsert([
+      {
+        id: `${bookTitle}-chunk-${i}`,
+        values: vectors,
+        metadata: {
+          bookTitle,
+          text: rawChunk,
+          chunk: i
+        }
+      }
+    ]);
+
+    console.log(`✅ Uploaded chunk ${i + 1}/${chunks.length}`);
+  }
+
+  return json(
+    {
+      success: true,
+      message: "Book indexed successfully",
+      chunks: chunks.length
+    },
+    200,
+    origin
+  );
+}
+
+       if (url.pathname === "/api/generate-questions" && req.method === "POST") {
+  try {
+    const { numberOfQuestions = 5, topic = "General" } = await req.json();
+
+    // 🔥 تحويل التوبيك إلى embedding (مهم جداً)
+    const embeddingResponse = await env.AI.run(
+      '@cf/baai/bge-base-en-v1.5',
+      { text: [topic] }
+    );
+
+    const queryVector = embeddingResponse.data[0];
+
+    // 🔥 البحث الصحيح داخل Vectorize
+    const vectorResults = await env.VECTORIZE.query(queryVector, {
+      topK: 6,
+      returnMetadata: true
     });
 
-    let responseText = aiResponse.response || aiResponse.text || "";
-    console.log("📥 استجابة الـ AI وصلت كاملة، جاري الفرز البرمجي...");
-      console.log(responseText);
+    const context = vectorResults.matches
+      ?.map(m => m.metadata?.text)
+      .filter(Boolean)
+      .join("\n\n") || "";
 
-    // 🛠️ التنظيف الأولي للنص في حال وجود ترويسات Markdown
-    if (typeof responseText === "string") {
-      
-      responseText = responseText.replace(/```json/gi, "").replace(/```/g, "").trim();
+    const bookTitle =
+      "Contemporary Oraland Maxillofacial Surgery 5th Ed_260529_203157";
+
+    console.log(`🎬 بدء توليد ${numberOfQuestions} سؤال...`);
+
+    const systemPrompt = `
+You are an expert medical professor in Oral and Maxillofacial Surgery.
+
+You MUST generate questions ONLY from the provided textbook content.
+
+TEXTBOOK CONTENT:
+${context}
+
+Generate exactly ${numberOfQuestions} MCQ questions about ${topic}.
+
+Return ONLY valid JSON:
+
+{
+  "questions":[
+    {
+      "question":"Question text",
+      "options":["A","B","C","D"],
+      "correct_answer":"A",
+      "explanation":"Short explanation based ONLY on the provided text."
     }
-    
-    // 🛠️ الحل البرمجي: استخراج النص المطابق من الـ Regex بأمان وتحويله لنص صريح [0] لمنع الـ Crash
-    const arrayMatch = responseText.match(/\[[\s\S]*\]/);
-    if (arrayMatch && arrayMatch[0]) {
-      responseText = arrayMatch[0]; 
-    }
+  ]
+}
+
+Rules:
+- Use ONLY the provided textbook content.
+- Do not use external knowledge.
+- Explanation must come from the text.
+- No markdown or extra text.
+`;
+
+    const aiResponse = await env.AI.run(
+      "@cf/meta/llama-3.2-3b-instruct",
+      {
+        messages: [
+          {
+            role: "system",
+            content: systemPrompt,
+          },
+          {
+            role: "user",
+            content: `Generate ${numberOfQuestions} MCQs about: ${topic}`
+          }
+        ],
+        max_tokens: 1200,
+        response_format: {
+          type: "json_object"
+        }
+      }
+    );
+
+    console.log(
+      "FULL AI RESPONSE:",
+      JSON.stringify(aiResponse, null, 2)
+    );
 
     let generatedQuestions = [];
 
-    try {
-      generatedQuestions = JSON.parse(responseText);
-    } catch (jsonErr) {
-      console.error("⚠️ فشل التحليل بسبب بنية النص، سيتم تفعيل مصفوفة صمام الأمان تلقائياً:", responseText);
-      
-      // 🛡️ صمام أمان طبي جاهز بنسبة 100% لضمان ألا تظهر صفحة 500 أبداً
-      generatedQuestions = [
-        {
-          question: "Which of the following is the primary indicator for the extraction of a third molar?",
-          options: ["Recurrent pericoronitis", "Preventive positioning", "Slight root curvature", "Patient aesthetic request"],
-          correct_answer: "Recurrent pericoronitis"
-        },
-        {
-          question: "What is the most common benign epithelial tumor of the oral cavity?",
-          options: ["Ameloblastoma", "Papilloma", "Fibroma", "Lipoma"],
-          correct_answer: "Papilloma"
-        },
-        {
-          question: "Which nerve is at highest risk during the surgical removal of a mandibular third molar?",
-          options: ["Inferior alveolar nerve", "Facial nerve", "Maxillary nerve", "Mylohyoid nerve"],
-          correct_answer: "Inferior alveolar nerve"
-        },
-        {
-          question: "What is the initial treatment of choice for acute alveolar osteitis (dry socket)?",
-          options: ["Gently irrigation and placement of a medicated dressing", "Immediate antibiotic prescription", "Aggressive surgical curettage", "Flap reflection and bone debridement"],
-          correct_answer: "Gently irrigation and placement of a medicated dressing"
-        },
-        {
-          question: "Which of the following spaces is involved in Ludwig's angina?",
-          options: ["Submandibular, sublingual, and submental spaces", "Buccal and canine spaces", "Pterygomandibular space only", "Retropharyngeal space only"],
-          correct_answer: "Submandibular, sublingual, and submental spaces"
-        }
-      ].slice(0, numberOfQuestions);
+    if (aiResponse?.response?.questions) {
+      generatedQuestions = aiResponse.response.questions;
+    } else if (aiResponse?.choices?.[0]?.message?.content) {
+      const parsed = JSON.parse(aiResponse.choices[0].message.content);
+      generatedQuestions = parsed.questions || [];
+    } else if (aiResponse?.questions) {
+      generatedQuestions = aiResponse.questions;
+    } else if (typeof aiResponse === "string") {
+      const parsed = JSON.parse(aiResponse);
+      generatedQuestions = parsed.questions || [];
     }
 
-    // 💾 الخطوة 2: الحفظ في قاعدة بيانات D1 بأمان
-    console.log(`💾 محاولة حفظ ${generatedQuestions.length} أسئلة في D1...`);
+    if (!Array.isArray(generatedQuestions) || generatedQuestions.length === 0) {
+      throw new Error("AI returned no questions");
+    }
+
+    console.log(`💾 حفظ ${generatedQuestions.length} سؤال`);
+
     try {
-      const stmt = env.DB.prepare(
-        "INSERT INTO questions (book_title, question, options, correct_answer) VALUES (?, ?, ?, ?)"
-      );
+      const stmt = env.DB.prepare(`
+        INSERT INTO questions
+        (book_title, question, options, correct_answer)
+        VALUES (?, ?, ?, ?)
+      `);
+
       for (const q of generatedQuestions) {
-        const optionsArr = Array.isArray(q.options) ? q.options : [];
-        await stmt.bind(bookTitle, q.question, JSON.stringify(optionsArr), q.correct_answer).run();
+        await stmt
+          .bind(
+            bookTitle,
+            q.question,
+            JSON.stringify(q.options || []),
+            q.correct_answer
+          )
+          .run();
       }
-      console.log("🎉 تم حفظ الأسئلة الطبية في قاعدة البيانات بنجاح!");
+
+      console.log("✅ تم حفظ الأسئلة");
     } catch (dbError) {
-      console.error("❌ خطأ D1 ولكن سنستمر لإرسال الأسئلة للمستخدم:", dbError.message);
+      console.error("D1 ERROR:", dbError.message);
     }
 
-    // العودة بالاستجابة والأسئلة للمطلب بنجاح
-    return new Response(JSON.stringify({ success: true, count: generatedQuestions.length, data: generatedQuestions }), {
-      headers: { "Content-Type": "application/json", ...CORS(origin) }
-    });
+    return new Response(
+      JSON.stringify({
+        success: true,
+        count: generatedQuestions.length,
+        data: generatedQuestions,
+      }),
+      {
+        headers: {
+          "Content-Type": "application/json",
+          ...CORS(origin),
+        },
+      }
+    );
 
   } catch (error) {
-    console.error("💥 خطأ فادح تسبب في الـ 500:", error.message);
-    return new Response(JSON.stringify({ success: false, error: error.message, stack: error.stack }), { 
-      status: 500, headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" } 
-    });
+    console.error("💥 AI ERROR:", error);
+
+    return new Response(
+      JSON.stringify({
+        success: false,
+        error: error.message,
+      }),
+      {
+        status: 500,
+        headers: {
+          "Content-Type": "application/json",
+          ...CORS(origin),
+        },
+      }
+    );
   }
 }
-
-
 
 
 
