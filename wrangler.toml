@@ -28,3 +28,11 @@ binding = "AI"
 [[vectorize]]
 binding = "VECTORIZE"
 index_name = "medical_books_index"
+
+
+[assets]
+directory = "."
+binding = "ASSETS"
+exclude = ["node_modules", ".git", "package-lock.json", "wrangler.toml", "schema.sql"]
+
+

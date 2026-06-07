@@ -338,7 +338,7 @@ async function startQuizFromServer(topicName) {
   }  
   try {
     const response = await fetch(
-      "http://127.0.0.1:8787/api/generate-questions",
+      "/api/generate-questions",
       {
         method: "POST",
         headers: {

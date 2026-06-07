@@ -513,7 +513,8 @@ Rules:
 
      
 
-      return json({ error: "not found" }, 404, origin);
+      // return json({ error: "not found" }, 404, origin);
+      return env.ASSETS.fetch(request);
     } catch (e) {
       return json({ error: "server error", detail: String(e) }, 500, origin);
     }
