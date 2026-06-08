@@ -357,20 +357,15 @@ async function startQuizFromServer(topicName) {
       throw new Error(result.error || "Failed to generate quiz");
     }
 
-
     const pool = result.data.map(item => ({
       q: item.question,
       o: item.options,
-
-      // تحويل نص الإجابة الصحيحة إلى رقم الخيار
       c: item.options.findIndex(
         option => option === item.correct_answer
       ),
-
       e: item.explanation || ""
     }));
     
-
     quizState = {
       i: 0,
       score: 0,
@@ -382,9 +377,11 @@ async function startQuizFromServer(topicName) {
     renderTab();
 
   } catch (error) {
+    // طباعة الخطأ الحقيقي في وحدة التحكم للمطورين فقط
     console.error(error);
 
-    alert(`❌ ${error.message}`);
+    // عرض رسالة عامة ومفهومة للمستخدم باللغة العربية
+    alert("❌ حدث خطأ أثناء إعداد الاختبار، يرجى المحاولة مرة أخرى.");
 
     if (btn) {
       btn.innerText = "Start quiz →";

@@ -361,7 +361,7 @@ ${rawChunk}
     const bookTitle =
       "Contemporary Oraland Maxillofacial Surgery 5th Ed_260529_203157";
 
-    const systemPrompt = `
+       const systemPrompt = `
 You are an expert medical professor in Oral and Maxillofacial Surgery.
 
 You MUST generate questions ONLY from the provided textbook content.
@@ -376,10 +376,15 @@ Return ONLY valid JSON:
 {
   "questions":[
     {
-      "question":"Question text",
-      "options":["A","B","C","D"],
-      "correct_answer":"A",
-      "explanation":"Short explanation based ONLY on the provided text."
+      "question": "Question text here?",
+      "options": [
+        "First full text option",
+        "Second full text option",
+        "Third full text option",
+        "Fourth full text option"
+      ],
+      "correct_answer": "The exact full text of the correct option matching one of the options above",
+      "explanation": "Short explanation based ONLY on the provided text."
     }
   ]
 }
@@ -387,9 +392,12 @@ Return ONLY valid JSON:
 Rules:
 - Use ONLY the provided textbook content.
 - Do not use external knowledge.
+- 'options' MUST contain the actual full-text choices, NOT letters like A, B, C, D.
+- 'correct_answer' MUST be the exact string text of the correct option, NOT a letter.
 - Explanation must come from the text.
 - No markdown or extra text.
 `;
+
 
     const aiResponse = await env.AI.run(
       "@cf/meta/llama-3.2-3b-instruct",
